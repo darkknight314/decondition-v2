@@ -1,142 +1,135 @@
 package com.decondition.service
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.widget.Toast
 import com.decondition.data.PreferencesManager
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.nio.ByteBuffer
+import com.social.media.decondition.util.VpnConnectionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.net.InetAddress
+import kotlinx.coroutines.withContext
 
 class DeconditionVpnService : VpnService() {
-
+    private val TAG = "DeconditionVpnService"
     private lateinit var preferencesManager: PreferencesManager
     private var vpnInterface: ParcelFileDescriptor? = null
+    private var vpnConnectionHelper: VpnConnectionHelper? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO)
+    private var isRunning = false
 
     override fun onCreate() {
         super.onCreate()
         preferencesManager = PreferencesManager(this)
+        Log.d(TAG, "VPN Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Start the VPN connection
-        startVpn()
+        Log.d(TAG, "VPN Service received start command")
+
+        // Check if it's a stop request
+        if (intent?.action == ACTION_STOP) {
+            stopVpn()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Start the VPN connection if not already running
+        if (!isRunning) {
+            startVpn()
+        }
+
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         stopVpn()
+        Log.d(TAG, "VPN Service destroyed")
     }
 
     private fun startVpn() {
-        // This is a simplified implementation
-        // In a real app, you would need to handle DNS resolution, packet forwarding, etc.
         try {
-            // Configure the VPN
-            val builder = Builder()
-                .setSession("Decondition VPN")
-                .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
+            // Create a pending intent for the system VPN confirmation dialog
+            val configureIntent = PendingIntent.getActivity(
+                this, 0,
+                Intent(this, Class.forName("com.social.media.decondition.MainActivity")),
+                PendingIntent.FLAG_IMMUTABLE
+            )
 
-            // Establish the connection
-            vpnInterface = builder.establish()
+            // Initialize the VPN connection helper
+            vpnConnectionHelper = VpnConnectionHelper(this, preferencesManager)
+            vpnConnectionHelper?.startVpn(configureIntent)
 
-            if (vpnInterface != null) {
-                Toast.makeText(
-                    this,
-                    "VPN Service Started",
-                    Toast.LENGTH_SHORT
-                ).show()
+            isRunning = true
 
-                // Start processing packets
-                serviceScope.launch {
-                    processPackets()
-                }
-            } else {
-                Toast.makeText(
-                    this,
-                    "Failed to establish VPN connection",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-
+            Toast.makeText(this, "VPN Service Started", Toast.LENGTH_SHORT).show()
+            Log.d(TAG, "VPN started successfully")
         } catch (e: Exception) {
-            Toast.makeText(
-                this,
-                "Error starting VPN: ${e.message}",
-                Toast.LENGTH_SHORT
-            ).show()
+            Log.e(TAG, "Error starting VPN: ${e.message}")
+            Toast.makeText(this, "Failed to start VPN: ${e.message}", Toast.LENGTH_SHORT).show()
+            stopSelf()
         }
     }
 
     private fun stopVpn() {
         try {
-            vpnInterface?.close()
-            vpnInterface = null
+            vpnConnectionHelper?.stopVpn()
+            vpnConnectionHelper = null
+            isRunning = false
+            Log.d(TAG, "VPN stopped")
+            Toast.makeText(this, "VPN Service Stopped", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            // Log error
+            Log.e(TAG, "Error stopping VPN: ${e.message}")
         }
     }
 
-    private fun processPackets() {
-        // This is a highly simplified implementation
-        // In a real app, you would need to properly parse DNS queries and other packets
+    // This method will be called by VpnConnectionHelper when a monitored domain is accessed
+    fun handleMonitoredDomainAccess(domain: String) {
+        // Update last accessed time
+        preferencesManager.updateDomainLastAccessed(domain)
+        Log.d(TAG, "Detected access to monitored domain: $domain")
 
-        vpnInterface?.let { vpn ->
-            val inputStream = FileInputStream(vpn.fileDescriptor)
-            val outputStream = FileOutputStream(vpn.fileDescriptor)
+        // Get the current challenge type from preferences
+        val challengeType = preferencesManager.getSelectedChallengeType()
 
-            val packet = ByteBuffer.allocate(32767)
-
-            try {
-                while (true) {
-                    // Read a packet
-                    packet.clear()
-                    val length = inputStream.read(packet.array())
-                    if (length <= 0) {
-                        break
-                    }
-
-                    // Process packet - this is where you would look for DNS queries
-                    // and detect access to monitored domains
-                    processDnsPacket(packet, length)
-
-                    // Forward the packet (in a real implementation)
-                    // outputStream.write(packet.array(), 0, length)
+        // Launch challenge activity on the main thread
+        serviceScope.launch {
+            withContext(Dispatchers.Main) {
+                val intent = Intent(this@DeconditionVpnService, ChallengeActivity::class.java).apply {
+                    putExtra(ChallengeActivity.EXTRA_DOMAIN, domain)
+                    putExtra(ChallengeActivity.EXTRA_TYPE, ChallengeActivity.TYPE_DOMAIN)
+                    putExtra(ChallengeActivity.EXTRA_CHALLENGE_TYPE, challengeType.name)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-            } catch (e: Exception) {
-                // Handle exceptions
+                startActivity(intent)
+
+                Toast.makeText(
+                    this@DeconditionVpnService,
+                    "Challenge required for domain: $domain",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }
 
-    private fun processDnsPacket(packet: ByteBuffer, length: Int) {
-        // This is a placeholder for DNS packet processing
-        // In a real app, you would parse the DNS query to extract the domain
+    companion object {
+        const val ACTION_START = "com.social.media.decondition.START_VPN"
+        const val ACTION_STOP = "com.social.media.decondition.STOP_VPN"
 
-        // For demo purposes, let's pretend we detected a monitored domain
-        val fakeDomain = "instagram.com" // Example domain
+        // Constants for ChallengeActivity
+        class ChallengeActivity {
+            companion object {
+                const val EXTRA_PACKAGE_NAME = "package_name"
+                const val EXTRA_DOMAIN = "domain"
+                const val EXTRA_TYPE = "type"
+                const val EXTRA_CHALLENGE_TYPE = "challenge_type"
 
-        if (preferencesManager.isDomainMonitored(fakeDomain)) {
-            // Update last accessed time
-            preferencesManager.updateDomainLastAccessed(fakeDomain)
-
-            // Launch challenge activity
-            serviceScope.launch(Dispatchers.Main) {
-                val intent = Intent(this@DeconditionVpnService, ChallengeActivity::class.java).apply {
-                    putExtra(ChallengeActivity.EXTRA_DOMAIN, fakeDomain)
-                    putExtra(ChallengeActivity.EXTRA_TYPE, ChallengeActivity.TYPE_DOMAIN)
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                }
-                startActivity(intent)
+                const val TYPE_APP = 1
+                const val TYPE_DOMAIN = 2
             }
         }
     }

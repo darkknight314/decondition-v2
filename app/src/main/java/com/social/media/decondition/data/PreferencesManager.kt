@@ -2,14 +2,17 @@ package com.decondition.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import com.social.media.decondition.data.ChallengeType
 
 class PreferencesManager(context: Context) {
+    private val TAG = "PreferencesManager"
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     // Challenge Type
     fun setSelectedChallengeType(type: ChallengeType) {
         prefs.edit().putString(KEY_CHALLENGE_TYPE, type.name).apply()
+        Log.d(TAG, "Challenge type set to: ${type.name}")
     }
 
     fun getSelectedChallengeType(): ChallengeType {
@@ -17,6 +20,7 @@ class PreferencesManager(context: Context) {
         return try {
             ChallengeType.valueOf(typeName ?: ChallengeType.SUDOKU.name)
         } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Invalid challenge type: $typeName, defaulting to SUDOKU")
             ChallengeType.SUDOKU
         }
     }
@@ -30,12 +34,14 @@ class PreferencesManager(context: Context) {
         val apps = getMonitoredApps().toMutableSet()
         apps.add(packageName)
         prefs.edit().putStringSet(KEY_MONITORED_APPS, apps).apply()
+        Log.d(TAG, "Added monitored app: $packageName")
     }
 
     fun removeMonitoredApp(packageName: String) {
         val apps = getMonitoredApps().toMutableSet()
         apps.remove(packageName)
         prefs.edit().putStringSet(KEY_MONITORED_APPS, apps).apply()
+        Log.d(TAG, "Removed monitored app: $packageName")
     }
 
     fun isAppMonitored(packageName: String): Boolean {
@@ -69,16 +75,41 @@ class PreferencesManager(context: Context) {
         val domains = getMonitoredDomains().toMutableSet()
         domains.add(normalizeDomain(domain))
         prefs.edit().putStringSet(KEY_MONITORED_DOMAINS, domains).apply()
+        Log.d(TAG, "Added monitored domain: $domain")
     }
 
     fun removeMonitoredDomain(domain: String) {
         val domains = getMonitoredDomains().toMutableSet()
         domains.remove(normalizeDomain(domain))
         prefs.edit().putStringSet(KEY_MONITORED_DOMAINS, domains).apply()
+        Log.d(TAG, "Removed monitored domain: $domain")
     }
 
     fun isDomainMonitored(domain: String): Boolean {
-        return getMonitoredDomains().contains(normalizeDomain(domain))
+        val normalizedDomain = normalizeDomain(domain)
+        val result = getMonitoredDomains().contains(normalizedDomain)
+
+        // Also check for subdomain matches if full domain not found
+        if (!result) {
+            getMonitoredDomains().forEach { monitoredDomain ->
+                if (normalizedDomain.endsWith(".$monitoredDomain")) {
+                    return true
+                }
+            }
+        }
+
+        return result
+    }
+
+    // Domain Access Handling
+    fun handleDomainAccess(domain: String): Boolean {
+        val normalizedDomain = normalizeDomain(domain)
+        if (isDomainMonitored(normalizedDomain)) {
+            updateDomainLastAccessed(normalizedDomain)
+            Log.d(TAG, "Handled access to monitored domain: $normalizedDomain")
+            return true
+        }
+        return false
     }
 
     // Domain Last Accessed Times
@@ -97,7 +128,7 @@ class PreferencesManager(context: Context) {
         return domain
             .replace(Regex("^https?://"), "")
             .replace(Regex("^www\\."), "")
-            .toLowerCase()
+            .lowercase()
     }
 
     companion object {
